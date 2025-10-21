@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -55,8 +56,8 @@ func ValidateChirp(w http.ResponseWriter, r *http.Request) {
 		Error string `json:"error"`
 	}
 
-	type httpRes struct {
-		Valid bool `json:"valid"`
+	type respBody struct {
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -78,11 +79,30 @@ func ValidateChirp(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	words := []string{"kerfuffle", "sharbert", "fornax"}
+	split := strings.Split(reqBdy.Body, " ")
+	for i, s := range split {
+		if contains(s, words) {
+			split[i] = "****"
+		}
+	}
+	resBdy := strings.Join(split, " ")
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(200)
-	dat, _ := json.Marshal(httpRes{Valid: true})
+	dat, _ := json.Marshal(respBody{CleanedBody: resBdy})
 	w.Write(dat)
 
+}
+
+func contains(s string, str []string) bool {
+	s = strings.ToLower(s)
+	for _, cmp := range str {
+		if s == cmp {
+			return true
+		}
+	}
+	return false
 }
 
 func main() {
