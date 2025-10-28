@@ -161,6 +161,70 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (cfg *apiConfig) handlerChirpsGetAll(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	rows, err := cfg.db.GetChirps(ctx)
+	if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	type chirpResp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	out := make([]chirpResp, 0, len(rows))
+	for _, c := range rows {
+		out = append(out, chirpResp{
+			ID: c.ID, CreatedAt: c.CreatedAt, UpdatedAt: c.UpdatedAt,
+			Body: c.Body, UserID: c.UserID,
+		})
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(out)
+}
+
+func (cfg *apiConfig) handlerChirpsGet(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("chirpID")
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	ctx := r.Context()
+	chirp, err := cfg.db.GetChirpsByID(ctx, uid)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Chirp not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	type chirpResp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string    `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
+
+	resp := chirpResp{
+		ID: chirp.ID, CreatedAt: chirp.CreatedAt, UpdatedAt: chirp.UpdatedAt,
+		Body: chirp.Body, UserID: chirp.UserID,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func contains(s string, str []string) bool {
 	s = strings.ToLower(s)
 	for _, cmp := range str {
@@ -191,6 +255,8 @@ func main() {
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.handlerChirpsCreate)
+	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGetAll)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpsGet)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
 
 	serveMux.HandleFunc("GET /api/healthz", ReadinessHandler)
