@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Psybernetic7/chirpy/internal/auth"
 	"github.com/Psybernetic7/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -75,7 +76,8 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) {
 	type userCreateParams struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 	var params userCreateParams
 
@@ -90,7 +92,16 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	dbUser, err := cfg.db.CreateUser(r.Context(), email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		http.Error(w, "failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	dbUser, err := cfg.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          email,
+		HashedPassword: hashedPassword,
+	})
 
 	if err != nil {
 		http.Error(w, "database error", http.StatusInternalServerError)
@@ -235,6 +246,48 @@ func contains(s string, str []string) bool {
 	return false
 }
 
+func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
+	type userLogin struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	var params userLogin
+
+	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	email := strings.TrimSpace(params.Email)
+	if email == "" || params.Password == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	dbUser, err := cfg.db.GetUserByEmail(r.Context(), email)
+	if err != nil {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	ok, err := auth.CheckPasswordHash(params.Password, dbUser.HashedPassword)
+	if err != nil || !ok {
+		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
+		return
+	}
+
+	resp := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -258,6 +311,7 @@ func main() {
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerChirpsGetAll)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpsGet)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
+	serveMux.HandleFunc("POST /api/login", apiCfg.handlerUserLogin)
 
 	serveMux.HandleFunc("GET /api/healthz", ReadinessHandler)
 
