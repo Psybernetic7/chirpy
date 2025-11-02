@@ -121,6 +121,65 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (cfg *apiConfig) handlerUserChange(w http.ResponseWriter, r *http.Request) {
+	type userChangeParams struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+	var params userChangeParams
+
+	tok, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tok, cfg.jwtSecret)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	email := strings.TrimSpace(params.Email)
+	if email == "" {
+		http.Error(w, "email required", http.StatusBadRequest)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		http.Error(w, "failed to hash password", http.StatusInternalServerError)
+		return
+	}
+
+	dbUser, err := cfg.db.UpdateUser(r.Context(), database.UpdateUserParams{
+		Email:          email,
+		HashedPassword: hashedPassword,
+		ID:             userID,
+	})
+	if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	resp := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	json.NewEncoder(w).Encode(resp)
+
+}
+
 func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request) {
 
 	tok, err := auth.GetBearerToken(r.Header)
@@ -364,6 +423,48 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("chirpID")
+	uid, err := uuid.Parse(id)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	tok, err := auth.GetBearerToken(r.Header)
+	if err != nil || tok == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tok, cfg.jwtSecret)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	ctx := r.Context()
+	chirp, err := cfg.db.GetChirpsByID(ctx, uid)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "Chirp not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+
+	if chirp.UserID != userID {
+		w.WriteHeader(403)
+		return
+	}
+
+	if err := cfg.db.DeleteChirp(ctx, uid); err != nil {
+		http.Error(w, "Database error", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
 	godotenv.Load()
 	secret := os.Getenv("JWT_SECRET")
@@ -394,8 +495,9 @@ func main() {
 	serveMux.HandleFunc("POST /api/login", apiCfg.handlerUserLogin)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
-
+	serveMux.HandleFunc("PUT /api/users", apiCfg.handlerUserChange)
 	serveMux.HandleFunc("GET /api/healthz", ReadinessHandler)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerChirpsDelete)
 
 	srv := &http.Server{Addr: ":8080", Handler: serveMux}
 	err = srv.ListenAndServe()
