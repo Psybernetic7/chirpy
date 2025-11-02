@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -288,10 +289,30 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 
 func (cfg *apiConfig) handlerChirpsGetAll(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	rows, err := cfg.db.GetChirps(ctx)
-	if err != nil {
-		http.Error(w, "database error", http.StatusInternalServerError)
-		return
+	author := r.URL.Query().Get("author_id")
+	order := r.URL.Query().Get("sort")
+	asc := order != "desc"
+
+	var rows []database.Chirp
+
+	if author == "" {
+		var err error
+		rows, err = cfg.db.GetChirps(ctx)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
+	} else {
+		uid, err := uuid.Parse(author)
+		if err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		rows, err = cfg.db.GetChirpsByUser(ctx, uid)
+		if err != nil {
+			http.Error(w, "database error", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	type chirpResp struct {
@@ -309,6 +330,15 @@ func (cfg *apiConfig) handlerChirpsGetAll(w http.ResponseWriter, r *http.Request
 			Body: c.Body, UserID: c.UserID,
 		})
 	}
+
+	sort.Slice(out, func(i, j int) bool {
+		a := out[i].CreatedAt
+		b := out[j].CreatedAt
+		if asc {
+			return a.Before(b)
+		}
+		return a.After(b)
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
