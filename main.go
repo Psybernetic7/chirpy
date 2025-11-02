@@ -26,10 +26,11 @@ func ReadinessHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type apiConfig struct {
@@ -37,6 +38,44 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+}
+
+type polkaWebhook struct {
+	Event string `json:"event"`
+	Data  struct {
+		UserID string `json:"user_id"`
+	} `json:"data"`
+}
+
+func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
+	var in polkaWebhook
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	if in.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	uid, err := uuid.Parse(in.Data.UserID)
+	if err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	_, err = cfg.db.UpgradeUserToChirpyRed(r.Context(), uid)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			http.Error(w, "user not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "database error", http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -110,10 +149,8 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 	}
 
 	resp := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt,
+		Email: dbUser.Email, IsChirpyRed: dbUser.IsChirpyRed.Bool,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -168,10 +205,8 @@ func (cfg *apiConfig) handlerUserChange(w http.ResponseWriter, r *http.Request) 
 	}
 
 	resp := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt,
+		Email: dbUser.Email, IsChirpyRed: dbUser.IsChirpyRed.Bool, // or .Bool if nullable
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -367,16 +402,17 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type loginResp struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-		Token     string    `json:"token"`
-		Refresh   string    `json:"refresh_token"`
+		ID          uuid.UUID `json:"id"`
+		CreatedAt   time.Time `json:"created_at"`
+		UpdatedAt   time.Time `json:"updated_at"`
+		Email       string    `json:"email"`
+		Token       string    `json:"token"`
+		Refresh     string    `json:"refresh_token"`
+		IsChirpyRed bool      `json:"is_chirpy_red"`
 	}
 	resp := loginResp{
 		ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt,
-		Email: dbUser.Email, Token: tok, Refresh: rtok,
+		Email: dbUser.Email, Token: tok, Refresh: rtok, IsChirpyRed: dbUser.IsChirpyRed.Bool,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -498,7 +534,7 @@ func main() {
 	serveMux.HandleFunc("PUT /api/users", apiCfg.handlerUserChange)
 	serveMux.HandleFunc("GET /api/healthz", ReadinessHandler)
 	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerChirpsDelete)
-
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerPolkaWebhooks)
 	srv := &http.Server{Addr: ":8080", Handler: serveMux}
 	err = srv.ListenAndServe()
 
