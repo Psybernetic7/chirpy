@@ -36,6 +36,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -121,9 +122,21 @@ func (cfg *apiConfig) handlerUserCreate(w http.ResponseWriter, r *http.Request) 
 }
 
 func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request) {
+
+	tok, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(tok, cfg.jwtSecret)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	type req struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		Body string `json:"body"`
 	}
 	var in req
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -147,7 +160,7 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, r *http.Request
 
 	row, err := cfg.db.CreateChirp(
 		r.Context(),
-		database.CreateChirpParams{Body: cleaned, UserID: in.UserID},
+		database.CreateChirpParams{Body: cleaned, UserID: userID},
 	)
 	if err != nil {
 		http.Error(w, "database error", http.StatusInternalServerError)
@@ -250,6 +263,7 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	type userLogin struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Expiry   int    `json:"expires_in_seconds"`
 	}
 
 	var params userLogin
@@ -277,11 +291,30 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+	expiresIn := time.Hour
+	if params.Expiry > 0 {
+		expiresIn = time.Duration(params.Expiry) * time.Second
+		if expiresIn > time.Hour {
+			expiresIn = time.Hour
+		}
+	}
+
+	tok, err := auth.MakeJWT(dbUser.ID, cfg.jwtSecret, expiresIn)
+	if err != nil {
+		http.Error(w, "failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	type loginResp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Email     string    `json:"email"`
+		Token     string    `json:"token"`
+	}
+	resp := loginResp{
+		ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt,
+		Email: dbUser.Email, Token: tok,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -290,6 +323,10 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	godotenv.Load()
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		log.Fatal("JWT_SECRET missing")
+	}
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
@@ -300,7 +337,7 @@ func main() {
 	dbQueries := database.New(db)
 
 	serveMux := http.NewServeMux()
-	apiCfg := apiConfig{db: dbQueries, platform: platform}
+	apiCfg := apiConfig{db: dbQueries, platform: platform, jwtSecret: secret}
 
 	fs := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(fs))
