@@ -38,6 +38,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkakey       string
 }
 
 type polkaWebhook struct {
@@ -48,6 +49,12 @@ type polkaWebhook struct {
 }
 
 func (cfg *apiConfig) handlerPolkaWebhooks(w http.ResponseWriter, r *http.Request) {
+	key, err := auth.GetAPIKey(r.Header)
+	if err != nil || key != cfg.polkakey {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
 	var in polkaWebhook
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -503,6 +510,10 @@ func (cfg *apiConfig) handlerChirpsDelete(w http.ResponseWriter, r *http.Request
 
 func main() {
 	godotenv.Load()
+	polkey := os.Getenv("POLKA_KEY")
+	if polkey == "" {
+		log.Fatal("POLKA_KEY missing")
+	}
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
 		log.Fatal("JWT_SECRET missing")
@@ -517,7 +528,7 @@ func main() {
 	dbQueries := database.New(db)
 
 	serveMux := http.NewServeMux()
-	apiCfg := apiConfig{db: dbQueries, platform: platform, jwtSecret: secret}
+	apiCfg := apiConfig{db: dbQueries, platform: platform, jwtSecret: secret, polkakey: polkey}
 
 	fs := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(fs))
