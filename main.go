@@ -263,16 +263,12 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 	type userLogin struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
-		Expiry   int    `json:"expires_in_seconds"`
 	}
-
 	var params userLogin
-
 	if err := json.NewDecoder(r.Body).Decode(&params); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-
 	email := strings.TrimSpace(params.Email)
 	if email == "" || params.Password == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -284,24 +280,30 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
 		return
 	}
-
 	ok, err := auth.CheckPasswordHash(params.Password, dbUser.HashedPassword)
 	if err != nil || !ok {
 		http.Error(w, "Incorrect email or password", http.StatusUnauthorized)
 		return
 	}
 
-	expiresIn := time.Hour
-	if params.Expiry > 0 {
-		expiresIn = time.Duration(params.Expiry) * time.Second
-		if expiresIn > time.Hour {
-			expiresIn = time.Hour
-		}
-	}
-
-	tok, err := auth.MakeJWT(dbUser.ID, cfg.jwtSecret, expiresIn)
+	tok, err := auth.MakeJWT(dbUser.ID, cfg.jwtSecret, time.Hour)
 	if err != nil {
 		http.Error(w, "failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	rtok, err := auth.MakeRefreshToken()
+	if err != nil {
+		http.Error(w, "failed to create token", http.StatusInternalServerError)
+		return
+	}
+	_, err = cfg.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token:     rtok,
+		UserID:    dbUser.ID,
+		ExpiresAt: time.Now().UTC().Add(60 * 24 * time.Hour),
+	})
+	if err != nil {
+		http.Error(w, "database error", http.StatusInternalServerError)
 		return
 	}
 
@@ -311,14 +313,55 @@ func (cfg *apiConfig) handlerUserLogin(w http.ResponseWriter, r *http.Request) {
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
 		Token     string    `json:"token"`
+		Refresh   string    `json:"refresh_token"`
 	}
 	resp := loginResp{
 		ID: dbUser.ID, CreatedAt: dbUser.CreatedAt, UpdatedAt: dbUser.UpdatedAt,
-		Email: dbUser.Email, Token: tok,
+		Email: dbUser.Email, Token: tok, Refresh: rtok,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+
+	rtok, err := auth.GetBearerToken(r.Header)
+	if err != nil || rtok == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	user, err := cfg.db.GetUserFromRefreshToken(r.Context(), rtok)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	atok, err := auth.MakeJWT(user.ID, cfg.jwtSecret, time.Hour)
+	if err != nil {
+		http.Error(w, "failed to create token", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(struct {
+		Token string `json:"token"`
+	}{Token: atok})
+}
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	tok, err := auth.GetBearerToken(r.Header)
+	if err != nil || tok == "" {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if _, err := cfg.db.RevokeRefreshToken(r.Context(), tok); err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -349,6 +392,8 @@ func main() {
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerChirpsGet)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUserCreate)
 	serveMux.HandleFunc("POST /api/login", apiCfg.handlerUserLogin)
+	serveMux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
+	serveMux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
 
 	serveMux.HandleFunc("GET /api/healthz", ReadinessHandler)
 
