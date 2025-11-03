@@ -28,7 +28,7 @@ Chirpy reads configuration from environment variables (loaded automatically from
 
 | Variable     | Description                                                                                   | Example                                                           |
 |--------------|-----------------------------------------------------------------------------------------------|-------------------------------------------------------------------|
-| `DB_URL`     | PostgreSQL connection string.                                                                 | `postgres://postgres:postgres@localhost:5432/chirpy?sslmode=disable` |
+| `DB_URL`     | PostgreSQL connection string.                                                                 | `postgres://<username>:<password>@localhost:5432/chirpy?sslmode=disable` |
 | `JWT_SECRET` | HS256 signing secret for access tokens. Prefer a 256-bit base64 string.                       | `y/JXKdwj+3XMrbGV6UdHosXDB96cnlLsEuw29Btv5zeM9oPlGVJBSJkCKzizLLyqzYK/pAFb/XtEARgWwAf1ew==` |
 | `POLKA_KEY`  | Shared secret used to authenticate incoming Polka webhook requests via the `ApiKey` header.   | `f271c81ff7084ee5b99a5091b42d486e`                                |
 | `PLATFORM`   | Controls development-only behaviour (`dev` enables `/admin/reset`).                           | `dev`                                                             |
